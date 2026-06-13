@@ -39,6 +39,15 @@ def plate(family):
     return trimesh.load(path, process=True)
 
 
+@pytest.fixture(scope="module")
+def nylon(family):
+    path = plate_path(family, connected=False)
+    assert os.path.exists(path), (
+        f"nylon file not generated yet — run Tools/make_sofle_plate.py first ({path})"
+    )
+    return trimesh.load(path, process=True)
+
+
 def test_rows_total_56_plus_wides():
     assert sum(len(row) for row in PLATE_ROWS) == 56  # + 2x 1.25u + 2x 1.5u = 60
 
@@ -48,6 +57,14 @@ def test_plate_is_single_watertight_body(plate):
     assert plate.is_winding_consistent
     components = plate.split(only_watertight=False)
     assert len(components) == 1, f"expected one fused body, got {len(components)}"
+
+
+def test_nylon_is_60_separate_watertight_bodies(nylon):
+    # The MJF/SLS file must be 60 distinct, non-touching, watertight caps so the
+    # powder-bed printer nests them as loose parts (no connectors to snip).
+    bodies = nylon.split(only_watertight=False)
+    assert len(bodies) == 60, f"expected 60 loose caps, got {len(bodies)}"
+    assert all(b.is_watertight for b in bodies), "every loose cap must be watertight"
 
 
 def test_plate_has_60_cap_walls(family, plate):

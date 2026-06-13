@@ -79,9 +79,10 @@ def load_cap(family, name):
     return cap
 
 
-def plate_path(family):
+def plate_path(family, connected=True):
+    suffix = "Sofle_Mix" if connected else "Sofle_Mix_Nylon"
     return os.path.join(
-        REPO_ROOT, "Production", family, f"gammacap_{FAMILIES[family]['prefix']}_Sofle_Mix.stl"
+        REPO_ROOT, "Production", family, f"gammacap_{FAMILIES[family]['prefix']}_{suffix}.stl"
     )
 
 
@@ -154,94 +155,122 @@ def bar(x, y, z_range, along_x):
     return to_manifold(box)
 
 
-def build_plate(family):
+def cap_placements(family, caps):
+    """Return [(name, x, y), ...] for all 60 caps in the Sofle layout."""
     fam = FAMILIES[family]
     wide_thumbs = (fam["wide_125"],) * 2 + (fam["wide_15"],) * 2
-    print(f"[{family}] preparing cap meshes...")
-    caps = {}
-    skirts = {}
-    for name in VARIANTS + list(set(wide_thumbs)):
-        raw = load_cap(family, name)
-        skirts[name] = skirt_bottom_z(raw)
-        caps[name] = decimate(raw, DECIMATE_TARGET)
-
-    # Bars span BAR_HEIGHT upward from the lowest skirt, so every cap's wall is
-    # overlapped and the connection cross-section is a solid BAR_WIDTH x
-    # BAR_HEIGHT. Verify the bar welds into the highest-skirt caps and stays
-    # below the shortest cap top (so it never breaks through a dished surface).
-    min_skirt, max_skirt = min(skirts.values()), max(skirts.values())
-    shortest_top = min(c.bounds[1][2] for c in caps.values())
-    bar_z = (min_skirt, min_skirt + BAR_HEIGHT)
-    assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
-    assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
-
     size = caps["Normal"].bounds[1] - caps["Normal"].bounds[0]
-    cap_w, cap_d = size[0], size[1]
-    pitch_x, pitch_y = cap_w + CAP_GAP, cap_d + CAP_GAP
+    cap_d = size[1]
+    pitch_x, pitch_y = size[0] + CAP_GAP, cap_d + CAP_GAP
 
-    print(f"[{family}] placing caps and connector bars...")
-    parts = []
-    used = {name: 0 for name in VARIANTS + list(set(wide_thumbs))}
+    placements = []
     for r, row in enumerate(PLATE_ROWS):
-        y = -r * pitch_y
         for c, name in enumerate(row):
-            parts.append(to_manifold(caps[name]).translate([c * pitch_x, y, 0]))
-            used[name] += 1
-            if c > 0:
-                parts.append(bar(c * pitch_x - pitch_x / 2, y, bar_z, along_x=True))
-            if r > 0:
-                parts.append(bar(c * pitch_x, y + pitch_y / 2, bar_z, along_x=False))
+            placements.append((name, c * pitch_x, -r * pitch_y))
 
-    # Wide-thumb row: caps differ in footprint, so align their top edges one
-    # gap below the thumb row and advance the x cursor per cap width.
     top_edge_y = -(len(PLATE_ROWS) - 1) * pitch_y - cap_d / 2 - CAP_GAP
-    gap_y = top_edge_y + CAP_GAP / 2
     cursor = 0.0
-    prev_edge = None
     for name in wide_thumbs:
         w, d = (caps[name].bounds[1] - caps[name].bounds[0])[:2]
-        cx = cursor + w / 2
-        parts.append(to_manifold(caps[name]).translate([cx, top_edge_y - d / 2, 0]))
-        used[name] += 1
-        col_x = min(7, max(0, round(cx / pitch_x))) * pitch_x
-        col_x = min(max(col_x, cx - w / 2 + BAR_WIDTH), cx + w / 2 - BAR_WIDTH)
-        parts.append(bar(col_x, gap_y, bar_z, along_x=False))
-        if prev_edge is not None:
-            parts.append(bar(prev_edge + CAP_GAP / 2, top_edge_y - 7.0, bar_z, along_x=True))
-        prev_edge = cursor + w
+        placements.append((name, cursor + w / 2, top_edge_y - d / 2))
         cursor += w + CAP_GAP
 
+    used = {}
+    for name, _, _ in placements:
+        used[name] = used.get(name, 0) + 1
     expected = {"Tilted_Saddle": 12, "Normal": 12, "Normal_Saddle": 10,
                 "Normal_Saddle_Homing": 2, "Tilted": 12, "Thumb": 8,
                 fam["wide_125"]: 2, fam["wide_15"]: 2}
     if used != expected:
         raise ValueError(f"layout does not match mix: {used} != {expected}")
+    return placements, pitch_x, pitch_y, cap_d, top_edge_y
 
-    print(f"[{family}] fusing {len(parts)} parts...")
-    plate = m3d.Manifold.batch_boolean(parts, m3d.OpType.Add)
-    if plate.status() != m3d.Error.NoError:
-        raise ValueError(f"union failed: {plate.status()}")
-    if len(plate.decompose()) != 1:
-        raise ValueError("plate has disconnected bodies")
 
-    result = to_trimesh(plate)
-    if not result.is_watertight:
-        raise ValueError("plate is not watertight")
+def build_plate(family, connected=True):
+    """connected=True fuses caps with bars into one SLA-ready shell;
+    connected=False emits the caps as separate bodies for MJF/SLS nylon."""
+    fam = FAMILIES[family]
+    names = VARIANTS + [fam["wide_125"], fam["wide_15"]]
+    print(f"[{family}] preparing cap meshes...")
+    caps, skirts = {}, {}
+    for name in names:
+        raw = load_cap(family, name)
+        skirts[name] = skirt_bottom_z(raw)
+        caps[name] = decimate(raw, DECIMATE_TARGET)
 
-    path = plate_path(family)
+    placements, pitch_x, pitch_y, cap_d, top_edge_y = cap_placements(family, caps)
+
+    if not connected:
+        # Nylon (MJF/SLS): loose bodies, no bars. Powder-bed printing needs no
+        # supports and nests parts itself, so we just place each cap and let
+        # them stay separate watertight shells in one multi-body STL.
+        print(f"[{family}] placing {len(placements)} loose caps...")
+        bodies = [caps[n].copy().apply_translation([x, y, 0]) for n, x, y in placements]
+        result = trimesh.util.concatenate(bodies)
+        n_shells = len(result.split(only_watertight=False))
+        if n_shells != len(placements):
+            raise ValueError(f"expected {len(placements)} loose bodies, got {n_shells}")
+    else:
+        # SLA: fuse with connector bars into one shell (JLC connected-parts).
+        min_skirt, max_skirt = min(skirts.values()), max(skirts.values())
+        shortest_top = min(c.bounds[1][2] for c in caps.values())
+        bar_z = (min_skirt, min_skirt + BAR_HEIGHT)
+        assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
+        assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
+
+        print(f"[{family}] placing caps and connector bars...")
+        parts = []
+        grid = [(n, x, y) for n, x, y in placements if y > top_edge_y + 1]
+        wides = [(n, x, y) for n, x, y in placements if y <= top_edge_y + 1]
+        for name, x, y in grid:
+            parts.append(to_manifold(caps[name]).translate([x, y, 0]))
+            c, r = round(x / pitch_x), round(-y / pitch_y)
+            if c > 0:
+                parts.append(bar(x - pitch_x / 2, y, bar_z, along_x=True))
+            if r > 0:
+                parts.append(bar(x, y + pitch_y / 2, bar_z, along_x=False))
+        gap_y = top_edge_y + CAP_GAP / 2
+        prev_edge = None
+        for name, cx, cy in wides:
+            w = (caps[name].bounds[1] - caps[name].bounds[0])[0]
+            parts.append(to_manifold(caps[name]).translate([cx, cy, 0]))
+            col_x = min(7, max(0, round(cx / pitch_x))) * pitch_x
+            col_x = min(max(col_x, cx - w / 2 + BAR_WIDTH), cx + w / 2 - BAR_WIDTH)
+            parts.append(bar(col_x, gap_y, bar_z, along_x=False))
+            if prev_edge is not None:
+                parts.append(bar(prev_edge + CAP_GAP / 2, top_edge_y - 7.0, bar_z, along_x=True))
+            prev_edge = cx + w / 2
+
+        print(f"[{family}] fusing {len(parts)} parts...")
+        plate = m3d.Manifold.batch_boolean(parts, m3d.OpType.Add)
+        if plate.status() != m3d.Error.NoError:
+            raise ValueError(f"union failed: {plate.status()}")
+        if len(plate.decompose()) != 1:
+            raise ValueError("plate has disconnected bodies")
+        result = to_trimesh(plate)
+        if not result.is_watertight:
+            raise ValueError("plate is not watertight")
+
+    path = plate_path(family, connected)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     result.export(path)
     size = result.bounds[1] - result.bounds[0]
-    print(f"[{family}] wrote {os.path.basename(path)}: {os.path.getsize(path) / 1e6:.1f} MB, "
+    kind = "fused plate" if connected else "loose bodies"
+    print(f"[{family}] wrote {os.path.basename(path)} ({kind}): "
+          f"{os.path.getsize(path) / 1e6:.1f} MB, "
           f"{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm, 60 caps")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--family", choices=list(FAMILIES), help="build a single family")
+    parser.add_argument("--only", choices=["sla", "nylon"],
+                        help="build only the SLA fused plate or only the nylon loose file")
     args = parser.parse_args()
+    kinds = {"sla": [True], "nylon": [False]}.get(args.only, [True, False])
     for family in ([args.family] if args.family else FAMILIES):
-        build_plate(family)
+        for connected in kinds:
+            build_plate(family, connected=connected)
 
 
 if __name__ == "__main__":
