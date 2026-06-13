@@ -1,6 +1,7 @@
-# ABOUTME: Validates the generated Sofle mix production plates (all switch families) are
-# ABOUTME: printable as one part: single watertight body, 60 caps, sane dimensions.
+# ABOUTME: Validates the committed Sofle order files (the <=9-cap split STLs) satisfy JLC3DP's
+# ABOUTME: max-10-parts-per-file rule and together hold the full 60-cap set per family.
 
+import glob
 import os
 import sys
 
@@ -10,19 +11,15 @@ import trimesh
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from make_sofle_plate import (  # noqa: E402
-    BAR_HEIGHT,
-    BAR_WIDTH,
     FAMILIES,
     PLATE_ROWS,
     load_cap,
     plate_path,
-    skirt_bottom_z,
 )
 
-# JLC3DP connected-parts rule: connection cross-sections must be >= 1.5mm, and
-# 3.0mm keeps them unified rather than flagged as loose small parts.
-JLC_MIN_CONNECTION = 1.5
-JLC_UNIFIED_CONNECTION = 3.0
+# JLC3DP accepts at most 10 small parts (caps) per file; upstream uses 9.
+JLC_MAX_PARTS = 10
+CAP_MIN_FOOTPRINT = 10.0  # mm; caps are ~18mm, connector bars are <=4mm
 
 
 @pytest.fixture(scope="module", params=list(FAMILIES))
@@ -30,99 +27,47 @@ def family(request):
     return request.param
 
 
-@pytest.fixture(scope="module")
-def plate(family):
-    path = plate_path(family)
-    assert os.path.exists(path), (
-        f"plate not generated yet — run Tools/make_sofle_plate.py first ({path})"
-    )
-    return trimesh.load(path, process=True)
+def split_files(family):
+    folder = os.path.dirname(plate_path(family))
+    return sorted(glob.glob(os.path.join(folder, "*_9pc_*.stl")))
 
 
-@pytest.fixture(scope="module")
-def nylon(family):
-    path = plate_path(family, connected=False)
-    assert os.path.exists(path), (
-        f"nylon file not generated yet — run Tools/make_sofle_plate.py first ({path})"
-    )
-    return trimesh.load(path, process=True)
+def cap_bodies(mesh):
+    return [b for b in mesh.split(only_watertight=False)
+            if (b.bounds[1] - b.bounds[0])[0] > CAP_MIN_FOOTPRINT]
 
 
 def test_rows_total_56_plus_wides():
     assert sum(len(row) for row in PLATE_ROWS) == 56  # + 2x 1.25u + 2x 1.5u = 60
 
 
-def test_plate_is_single_watertight_body(plate):
-    assert plate.is_watertight, "plate must be watertight for print services"
-    assert plate.is_winding_consistent
-    components = plate.split(only_watertight=False)
-    assert len(components) == 1, f"expected one fused body, got {len(components)}"
+def test_split_files_exist(family):
+    assert split_files(family), f"no _9pc_ order files for {family} — run split_for_jlc.py"
 
 
-def test_nylon_is_60_separate_watertight_bodies(nylon):
-    # The MJF/SLS file must be 60 distinct, non-touching, watertight caps so the
-    # powder-bed printer nests them as loose parts (no connectors to snip).
-    bodies = nylon.split(only_watertight=False)
-    assert len(bodies) == 60, f"expected 60 loose caps, got {len(bodies)}"
-    assert all(b.is_watertight for b in bodies), "every loose cap must be watertight"
+def test_each_file_within_jlc_part_limit(family):
+    # The rule that actually gates JLC approval: <=10 caps per file.
+    for f in split_files(family):
+        caps = cap_bodies(trimesh.load(f, process=True))
+        assert len(caps) <= JLC_MAX_PARTS, (
+            f"{os.path.basename(f)} has {len(caps)} caps, over JLC's {JLC_MAX_PARTS} limit"
+        )
 
 
-def test_plate_has_60_cap_walls(family, plate):
-    # Slice low, where every cap (whatever its height) still shows a hollow
-    # wall. Connector bars fuse the outer boundaries together, so cap count is
-    # read from the interior holes: one cap-sized hole per cap. Slicing high
-    # would miss the short caps, which have already closed into their dish.
-    from shapely.geometry import Polygon
-
-    cap = load_cap(family, "Normal")
-    cap_area = np.prod((cap.bounds[1] - cap.bounds[0])[:2])
-    slice_z = skirt_bottom_z(cap) + 0.6
-    section = plate.section(plane_origin=[0, 0, slice_z], plane_normal=[0, 0, 1])
-    assert section is not None
-    planar, _ = section.to_2D()
-    holes = sum(
-        1
-        for poly in planar.polygons_full
-        for ring in poly.interiors
-        if Polygon(ring).area > cap_area / 3
-    )
-    assert holes == 60, f"expected 60 cap walls in cross-section, found {holes}"
+def test_caps_are_watertight_and_complete(family):
+    # Every cap watertight, and the files together hold the full 60-cap set.
+    total = 0
+    for f in split_files(family):
+        caps = cap_bodies(trimesh.load(f, process=True))
+        assert all(c.is_watertight for c in caps), f"non-watertight cap in {os.path.basename(f)}"
+        total += len(caps)
+    assert total == 60, f"{family}: split files hold {total} caps, expected 60"
 
 
-def test_plate_dimensions_fit_layout(plate):
-    size = plate.bounds[1] - plate.bounds[0]
-    assert size[0] < 165, f"plate too wide: {size[0]:.1f}mm"
-    assert size[1] < 180, f"plate too deep: {size[1]:.1f}mm"
-    assert size[2] < 12, f"plate too tall: {size[2]:.1f}mm"
-
-
-def test_plate_file_size_uploadable(family):
-    mb = os.path.getsize(plate_path(family)) / 1e6
-    assert mb < 50, f"STL is {mb:.0f}MB — too large for print service upload"
-
-
-def test_connection_bars_meet_jlc_minimum():
-    # Both bar cross-section dimensions must clear JLC's unified-connection size
-    # so the plate is accepted as one shell, not 60 loose small parts.
-    assert min(BAR_WIDTH, BAR_HEIGHT) >= JLC_UNIFIED_CONNECTION
-
-
-def test_horizontal_bridge_is_solid(family, plate):
-    # The bar between the first two top-row caps must be a solid block at least
-    # JLC's minimum across its cross-section. Probe a grid of points filling a
-    # JLC_MIN_CONNECTION square at the bar centre and require all of them inside
-    # the mesh, proving a continuous connection of that thickness exists.
-    cap = load_cap(family, "Normal")
-    pitch_x = (cap.bounds[1] - cap.bounds[0])[0] + 1.0
-    bar_center_z = skirt_bottom_z(cap) + BAR_HEIGHT / 2
-    half = JLC_MIN_CONNECTION / 2
-    offs = np.linspace(-half, half, 5)
-    pts = np.array([[pitch_x / 2, y, bar_center_z + z] for y in offs for z in offs])
-    inside = plate.contains(pts)
-    assert inside.all(), (
-        f"{(~inside).sum()}/{len(pts)} probe points in the bridge are outside the "
-        "mesh — connection thinner than JLC minimum"
-    )
+def test_files_are_uploadable(family):
+    for f in split_files(family):
+        mb = os.path.getsize(f) / 1e6
+        assert mb < 50, f"{os.path.basename(f)} is {mb:.0f}MB — too large to upload"
 
 
 def test_wide_thumbs_are_wider_than_1u(family):
