@@ -1,4 +1,2 @@
 __pycache__
 .DS_Store
-# raw plate STLs in Production stay local; only the zips are committed
-Production/**/*.stl
