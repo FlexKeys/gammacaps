@@ -32,11 +32,16 @@ FAMILIES = {
     },
 }
 
-# Caps sit 1mm apart, bridged by bars that weld into the cap skirts.
+# Caps sit 1mm apart, bridged by bars that weld into the cap skirts. JLC3DP's
+# connected-parts rule requires every connection cross-section to be at least
+# 1.5mm (3.0mm to guarantee the parts stay unified and aren't flagged as loose
+# small parts), so the bars are a 3.0mm-wide x 3.0mm-tall solid that bridges
+# the gap and overlaps each cap wall by ~1.5mm.
+# https://jlc3dp.com/help/article/213-Connected-Parts-Printing-Guide
 CAP_GAP = 1.0
 BAR_WIDTH = 3.0
 BAR_LENGTH = 4.0
-BAR_WELD_HEIGHT = 1.0
+BAR_HEIGHT = 3.0
 
 # Sofle v2 mix, same sculpt logic as SOFLE_PRINT_MIX.md in KLP-Lame-Keycaps:
 # tilted variants on the two outermost rows, saddle home row, flat upper row.
@@ -160,9 +165,15 @@ def build_plate(family):
         skirts[name] = skirt_bottom_z(raw)
         caps[name] = decimate(raw, DECIMATE_TARGET)
 
-    # Bars start at the lowest skirt and reach BAR_WELD_HEIGHT past the highest
-    # one, so every adjacent pair of variants gets welded.
-    bar_z = (min(skirts.values()), max(skirts.values()) + BAR_WELD_HEIGHT)
+    # Bars span BAR_HEIGHT upward from the lowest skirt, so every cap's wall is
+    # overlapped and the connection cross-section is a solid BAR_WIDTH x
+    # BAR_HEIGHT. Verify the bar welds into the highest-skirt caps and stays
+    # below the shortest cap top (so it never breaks through a dished surface).
+    min_skirt, max_skirt = min(skirts.values()), max(skirts.values())
+    shortest_top = min(c.bounds[1][2] for c in caps.values())
+    bar_z = (min_skirt, min_skirt + BAR_HEIGHT)
+    assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
+    assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
 
     size = caps["Normal"].bounds[1] - caps["Normal"].bounds[0]
     cap_w, cap_d = size[0], size[1]
