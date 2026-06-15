@@ -24,14 +24,17 @@ plain wide thumbs.
 
 JLC3DP accepts at most **10 small parts per file** for both resin (SLA) and
 nylon (MJF/SLS) — a single 60-cap file is rejected on the part count whether
-it's one fused shell or loose bodies (we tried both; both failed). The proven
-fix is what the upstream Production files do: ship the set as several files of
-**≤9 caps each**, held together by light connector bars.
+it's one fused shell or loose bodies (we tried both; both failed). JLC also
+rejects any file whose parts don't all connect into one merge-able shell. The
+proven fix is to ship the set as several files of **≤9 caps each, every file a
+single connected strip** held together by light connector bars.
 
-So each family's full 60-cap mix is split into **seven `*_9pc_*.stl` files**
-under `Production/<family>/` (six of 9 caps + one of 6). Upload all seven for
-your family, order quantity 1 of each. The **same seven files work for both
-resin and nylon** — the process/material is just a setting in JLC's order form:
+So each family's full 60-cap mix is split by keyboard row into **eight
+`*_9pc_*.stl` files** under `Production/<family>/` (seven rows of 8 caps + one
+of 4). Each file is one contiguous row, so it always merges into a single
+shell. Upload all eight for your family, order quantity 1 of each. The **same
+eight files work for both resin and nylon** — the process/material is just a
+setting in JLC's order form:
 
 - **Resin (SLA):** the bars hold each group together through the resin process;
   snip them with flush cutters after printing.
@@ -45,11 +48,11 @@ https://jlc3dp.com/help/article/213-Connected-Parts-Printing-Guide
 
 | Family            | Files (`Production/<family>/`)            | For                    |
 | :---------------- | :---------------------------------------- | :--------------------- |
-| MX                | `gammacap_MX_Sofle_Mix_9pc_1of7…7of7`     | MX switches            |
-| Choc              | `gammacap_Choc_Sofle_Mix_9pc_1of7…7of7`   | Choc switches          |
-| Choc (MX Spacing) | `gammacap_Choc(MX)_Sofle_Mix_9pc_1of7…`   | Choc on MX spacing     |
+| MX                | `gammacap_MX_Sofle_Mix_9pc_1of8…8of8`     | MX switches            |
+| Choc              | `gammacap_Choc_Sofle_Mix_9pc_1of8…8of8`   | Choc switches          |
+| Choc (MX Spacing) | `gammacap_Choc(MX)_Sofle_Mix_9pc_1of8…`   | Choc on MX spacing     |
 
-Each family's seven files together hold the full mix plus both wide-thumb
+Each family's eight files together hold the full mix plus both wide-thumb
 options (2 × 1.25u + 2 × 1.5u), so the unused thumb pair is spares. Row map of
 the full set: Tilted Saddle ×8 | Tilted Saddle ×4 + Normal ×4 | Normal ×8 |
 Normal Saddle ×8 | Normal Saddle ×2 + Homing ×2 + Tilted ×4 | Tilted ×8 |
